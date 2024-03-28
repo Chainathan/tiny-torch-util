@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='tiny-torch-utils',
-    version='0.1',
+    name='tinytorchutil',
+    version='0.1.1',
     packages=find_packages(),
     description='A personal collection of small utility functions for PyTorch.',
     long_description=open('README.md').read(),
