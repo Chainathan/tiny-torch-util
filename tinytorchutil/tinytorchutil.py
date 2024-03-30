@@ -16,7 +16,7 @@ from torcheval.metrics import Mean
 
 from fastprogress import progress_bar,master_bar
 
-__all__ = ['set_seed', 'to_cpu', 'clean_tb', 'clean_ipython_hist', 'clean_mem', 'Dataset', 'DataLoaders', 'def_device', 'show_image', 'subplots', 'get_grid', 'show_images', 
+__all__ = ['def_device', 'set_seed', 'to_cpu', 'clean_tb', 'clean_ipython_hist', 'clean_mem', 'Dataset', 'DataLoaders', 'def_device', 'show_image', 'subplots', 'get_grid', 'show_images', 
            'CancelFitException', 'CancelBatchException', 'CancelEpochException', 'Callback', 'SingleBatchCB', 'MetricsCB', 'DeviceCB', 'TrainCB', 'ProgressCB', 'Learner', 
            'TrainLearner', 'LRFinderCB', 'lr_find', 'Hook', 'Hooks', 'HooksCallback', 'append_stats', 'ActivationStats']
 
