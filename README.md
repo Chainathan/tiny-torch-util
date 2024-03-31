@@ -1,6 +1,6 @@
 # tiny-torch-util
 
-tiny-torch-util is a personal collection of utility functions and classes designed to streamline PyTorch-based deep learning model training. It offers flexibility through the learner framework, utilizing callbacks for various use cases. Some of these utilities are built from scratch, while others are inspired by the fastai library. Below are the main components of this package:
+tiny-torch-util is a personal toy package containing a collection of utility functions and classes designed to streamline PyTorch-based deep learning model training. It offers flexibility through the learner framework, utilizing callbacks for various use cases. Some of these utilities are built from scratch, while others are inspired by the fastai library. Below are the main components of this package:
 
 ## Installation
 
