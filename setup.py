@@ -4,7 +4,7 @@ setup(
     name='tinytorchutil',
     version='0.1.2',
     packages=find_packages(),
-    description='A personal collection of small utility functions for PyTorch.',
+    description='A personal collection of small utility functions for PyTorch and DL development.',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     author='Chainathan',
