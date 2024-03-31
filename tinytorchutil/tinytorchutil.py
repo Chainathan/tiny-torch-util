@@ -16,9 +16,11 @@ from torcheval.metrics import Mean
 
 from fastprogress import progress_bar,master_bar
 
+import wandb
+
 __all__ = ['def_device', 'set_seed', 'to_device', 'clean_tb', 'clean_ipython_hist', 'clean_mem', 'Dataset', 'DataLoaders', 'def_device', 'show_image', 'subplots', 'get_grid', 'show_images', 
            'CancelFitException', 'CancelBatchException', 'CancelEpochException', 'Callback', 'SingleBatchCB', 'MetricsCB', 'DeviceCB', 'TrainCB', 'ProgressCB', 'Learner', 
-           'TrainLearner', 'LRFinderCB', 'lr_find', 'Hook', 'Hooks', 'HooksCallback', 'append_stats', 'ActivationStats']
+           'TrainLearner', 'LRFinderCB', 'lr_find', 'Hook', 'Hooks', 'HooksCallback', 'append_stats', 'ActivationStats', 'BaseSchedCB', 'BatchSchedCB', 'WandBCB', 'AccelerateCB']
 
 # General Utils
     
@@ -495,6 +497,15 @@ class LRFinderCB(Callback):
 def lr_find(self:Learner, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
     self.fit(max_epochs, lr=start_lr, cbs=LRFinderCB(gamma=gamma, max_mult=max_mult))
 
+class BaseSchedCB(Callback):
+    def __init__(self, sched): self.sched = sched
+    def before_fit(self, learn): self.schedo = self.sched(learn.opt)
+    def _step(self, learn):
+        if learn.training: self.schedo.step()
+
+class BatchSchedCB(BaseSchedCB):
+    def after_batch(self, learn): self._step(learn)
+
 # Hooks and Activation Stats
 
 class Hook():
@@ -633,3 +644,47 @@ class ActivationStats(HooksCallback):
         axs[1].set_title('Stdevs')
         plt.legend(fc.L.range(self))
     
+class WandBCB(MetricsCB):
+    order=100
+    def __init__(self, config, *ms, project='ddpm_cifar10', **metrics):
+        fc.store_attr()
+        super().__init__(*ms, **metrics)
+        
+    def before_fit(self, learn): wandb.init(project=self.project, config=self.config)
+    def after_fit(self, learn): wandb.finish()
+
+    def _log(self, d): 
+        if self.train: 
+            wandb.log({'train_'+m:float(d[m]) for m in self.all_metrics})
+        else: 
+            wandb.log({'val_'+m:float(d[m]) for m in self.all_metrics})
+            wandb.log({'samples':self.sample_figure(learn)})
+        print(d)
+
+        
+    def sample_figure(self, learn):
+        with torch.no_grad():
+            samples = sample(learn.model, (16, 3, 32, 32))
+        s = (samples[-1] + 0.5).clamp(0,1)
+        plt.clf()
+        fig, axs = get_grid(16)
+        for im,ax in zip(s[:16], axs.flat): show_image(im, ax=ax)
+        return fig
+
+    def after_batch(self, learn):
+        super().after_batch(learn) 
+        wandb.log({'loss':learn.loss})
+
+from accelerate import Accelerator
+
+class AccelerateCB(TrainCB):
+    order = DeviceCB.order+10
+    def __init__(self, n_inp=1, mixed_precision="fp16"):
+        super().__init__(n_inp=n_inp)
+        self.acc = Accelerator(mixed_precision=mixed_precision)
+        
+    def before_fit(self, learn):
+        learn.model,learn.opt,learn.dls.train,learn.dls.valid = self.acc.prepare(
+            learn.model, learn.opt, learn.dls.train, learn.dls.valid)
+
+    def backward(self, learn): self.acc.backward(learn.loss)
