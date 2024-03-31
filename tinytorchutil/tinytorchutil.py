@@ -653,7 +653,7 @@ class WandBCB(MetricsCB):
     def before_fit(self, learn): wandb.init(project=self.project, config=self.config)
     def after_fit(self, learn): wandb.finish()
 
-    def _log(self, d): 
+    def _log(self, d, learn): 
         if self.train: 
             wandb.log({'train_'+m:float(d[m]) for m in self.all_metrics})
         else: 
@@ -662,7 +662,7 @@ class WandBCB(MetricsCB):
         print(d)
 
         
-    def sample_figure(self, learn):
+    def sample_figure(self, learn, sample):
         with torch.no_grad():
             samples = sample(learn.model, (16, 3, 32, 32))
         s = (samples[-1] + 0.5).clamp(0,1)
