@@ -20,7 +20,8 @@ import wandb
 
 __all__ = ['def_device', 'set_seed', 'to_device', 'clean_tb', 'clean_ipython_hist', 'clean_mem', 'Dataset', 'DataLoaders', 'def_device', 'show_image', 'subplots', 'get_grid', 'show_images', 
            'CancelFitException', 'CancelBatchException', 'CancelEpochException', 'Callback', 'SingleBatchCB', 'MetricsCB', 'DeviceCB', 'TrainCB', 'ProgressCB', 'Learner', 
-           'TrainLearner', 'LRFinderCB', 'lr_find', 'Hook', 'Hooks', 'HooksCallback', 'append_stats', 'ActivationStats', 'BaseSchedCB', 'BatchSchedCB', 'WandBCB', 'AccelerateCB']
+           'TrainLearner', 'LRFinderCB', 'lr_find', 'Hook', 'Hooks', 'HooksCallback', 'append_stats', 'ActivationStats', 'BaseSchedCB', 'BatchSchedCB', 'WandBCB', 'AccelerateCB',
+           'EvaluateLearner']
 
 # General Utils
     
@@ -127,9 +128,9 @@ class DataLoaders():
     - bs (int): Batch size. Default is 64.
     - shuffle (bool): Whether to shuffle the training dataset. Default is True.
     """
-    def __init__(self, train_ds, valid_ds, bs=64, shuffle=True):
-        self.train = DataLoader(train_ds, bs, shuffle=shuffle)
-        self.valid = DataLoader(valid_ds, bs)
+    def __init__(self, train_ds, valid_ds, bs=64, train_shuffle=True, val_shuffle=False, num_workers=0):
+        self.train = DataLoader(train_ds, bs, shuffle=train_shuffle, num_workers=num_workers)
+        self.valid = DataLoader(valid_ds, bs, shuffle=val_shuffle, num_workers=num_workers)
 
 @fc.delegates(plt.Axes.imshow)
 def show_image(im, ax=None, figsize=None, title=None, noframe=True, **kwargs):
@@ -299,9 +300,10 @@ class Learner():
     - cbs (list, optional): List of callbacks to use during training.
     - opt_func: The optimizer function to use, defaults to SGD.
     """
-    def __init__(self, model, dls=(0,), loss_func=F.mse_loss, lr=0.1, cbs=None, opt_func=optim.SGD):
+    def __init__(self, model, dls=(0,), loss_func=F.mse_loss, lr=0.1, cbs=None, opt_func=optim.SGD, opt=None):
         cbs = fc.L(cbs)
         fc.store_attr()
+        self.testing = False
 
     @with_cbs('batch')
     def _one_batch(self):
@@ -338,10 +340,20 @@ class Learner():
             self.n_epochs = n_epochs
             self.epochs = range(n_epochs)
             if lr is None: lr = self.lr
-            if self.opt_func: self.opt = self.opt_func(self.model.parameters(), lr)
+            if self.opt is None and self.opt_func: self.opt = self.opt_func(self.model.parameters(), lr)
             self._fit(train, valid)
         finally:
             for cb in cbs: self.cbs.remove(cb)
+
+    def summary(self):
+        print('Model Summary:')
+        print('Total Parameters:', sum([p.numel() for p in self.model.parameters()]))
+        print('Layer-wise Parameters:')
+        print([p.numel() for p in self.model.parameters()])
+        print('Layer-wise Shapes:')
+        print([p.shape for p in self.model.parameters()])
+        print('Model Architecture:')
+        print(self.model)
 
     def __getattr__(self, name):
         if name in ('predict','get_loss','backward','step','zero_grad'): return partial(self.callback, name)
@@ -359,6 +371,40 @@ class TrainLearner(Learner):
     def backward(self): self.loss.backward()
     def step(self): self.opt.step()
     def zero_grad(self): self.opt.zero_grad()
+
+class EvaluateLearner(TrainLearner):
+    """A subclass of TrainLearner with overridden methods for the evaluation process."""
+    def evaluate_test(self, dl, eval_func=None):
+        self.all_preds = []
+        self.all_targets = []
+        self.testing = True
+        if eval_func is None: eval_func = self.loss_func
+        self.model.train(False)
+        with torch.no_grad():
+            self.dl = dl
+            self._one_epoch()
+            self.all_preds = to_device(torch.cat(self.all_preds))
+            self.all_targets = to_device(torch.cat(self.all_targets))
+            self.testing = False
+            result = eval_func(self.all_preds, self.all_targets)
+            self.all_preds = []
+            self.all_targets = []
+            return result
+        
+    def simple_evaluate(self, ds, eval_func=None):
+        self.model.train(False)
+        if eval_func is None: eval_func = self.loss_func
+        device = next(self.model.parameters()).device
+        to_device(ds, device=device)
+        with torch.no_grad():
+            y_pred = self.model(ds.x)
+            return eval_func(y_pred, ds.y)
+        
+    def predict(self): 
+        self.preds = self.model(self.batch[0]) 
+        if self.testing:
+            self.all_preds.append(self.preds)
+            self.all_targets.append(self.batch[1])
 
 class SingleBatchCB(Callback):
     """A callback to stop training after a single batch. Useful for quick tests."""
@@ -408,10 +454,11 @@ class MetricsCB(Callback):
     def _log(self, d): print(d)
     def before_fit(self, learn): learn.metrics = self
     def before_epoch(self, learn): [o.reset() for o in self.all_metrics.values()]
+    def after_fit(self, learn): [o.reset() for o in self.all_metrics.values()]
 
     def after_epoch(self, learn):
         """Log the computed metrics after each epoch."""
-        log = {k:f'{v.compute():.3f}' for k,v in self.all_metrics.items()}
+        log = {k:f'{v.compute():.4f}' for k,v in self.all_metrics.items()}
         log['epoch'] = learn.epoch
         log['train'] = 'train' if learn.model.training else 'eval'
         self._log(log)
@@ -459,7 +506,7 @@ class ProgressCB(Callback):
     
     def after_epoch(self, learn): 
         """Plot validation losses if applicable."""
-        if not learn.training:
+        if not learn.training and not learn.testing:
             if self.plot and hasattr(learn, 'metrics'): 
                 self.val_losses.append(learn.metrics.all_metrics['loss'].compute())
                 self.mbar.update_graph([[fc.L.range(self.losses), self.losses],[fc.L.range(learn.epoch+1).map(lambda x: (x+1)*len(learn.dls.train)), self.val_losses]])
@@ -607,16 +654,23 @@ class ActivationStats(HooksCallback):
     """
     def __init__(self, mod_filter=fc.noop): super().__init__(append_stats, mod_filter)
 
-    def color_dim(self, figsize=(11,5)):
+    def color_dim(self, figsize=(11,5), colorbar=True, aspect='auto'):
         """
         Plots the histograms of activations for each hooked module as images, where color intensity represents frequency.
 
         Parameters:
             figsize: The size of the figure each histogram is plotted in.
         """
-        fig,axes = get_grid(len(self), figsize=figsize)
-        for ax,h in zip(axes.flat, self):
-            show_image(get_hist(h), ax, origin='lower')
+        for i,h in enumerate(self):
+            fig,ax = plt.subplots(figsize=figsize)
+            im = ax.imshow(get_hist(h), origin='lower', aspect=aspect)
+            ax.axis('on')  # Ensure axis is turned on to display labels
+            ax.set_ylabel('Activation Intensity Bin')  # X-axis label
+            ax.set_xlabel('Iterations')  # Y-axis label
+            ax.set_title(f'Layer {i}')
+            # Optional: Adding a color bar to indicate the scale of intensity
+            if colorbar:
+                fig.colorbar(im, ax=ax, orientation='vertical', label='Intensity factor')
 
     def dead_chart(self, figsize=(11,5)):
         """
@@ -626,9 +680,10 @@ class ActivationStats(HooksCallback):
             figsize: The size of the figure each proportion plot is plotted in.
         """
         fig,axes = get_grid(len(self), figsize=figsize)
-        for ax,h in zip(axes.flatten(), self):
+        for ax,(i,h) in zip(axes.flatten(), enumerate(self)):
             ax.plot(get_min(h))
             ax.set_ylim(0,1)
+            ax.set_title(f'Layer {i} dead activations %')
 
     def plot_stats(self, figsize=(10,4)):
         """
@@ -640,9 +695,9 @@ class ActivationStats(HooksCallback):
         fig,axs = plt.subplots(1,2, figsize=figsize)
         for h in self:
             for i in 0,1: axs[i].plot(h.stats[i])
-        axs[0].set_title('Means')
-        axs[1].set_title('Stdevs')
-        plt.legend(fc.L.range(self))
+        axs[0].set_title('Means of activations')
+        axs[1].set_title('Stdevs of activations')
+        plt.legend([f'layer {i}' for i in fc.L.range(self)])
     
 class WandBCB(MetricsCB):
     order=100
