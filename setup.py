@@ -16,6 +16,7 @@ setup(
     'fastprogress',
     'torcheval',
     'wandb',
+    'accelerate'
     ],
     python_requires='>=3.6',
 )

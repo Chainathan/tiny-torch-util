@@ -329,18 +329,22 @@ class Learner():
 
     @with_cbs('fit')
     def _fit(self, train, valid):
+        self.callback('before_optimizer_init')
+        self.opt = self.opt_func(self.model.parameters(), self.lr)
+        self.callback('after_optimizer_init')
         for self.epoch in self.epochs:
             if train: self.one_epoch(True)
             if valid: torch.no_grad()(self.one_epoch)(False)
 
-    def fit(self, n_epochs=1, train=True, valid=True, cbs=None, lr=None):
+    def fit(self, n_epochs=1, train=True, valid=True, cbs=None, lr=None, opt_func=None, loss_func=None):
         cbs = fc.L(cbs)
         for cb in cbs: self.cbs.append(cb)
         try:
             self.n_epochs = n_epochs
             self.epochs = range(n_epochs)
-            if lr is None: lr = self.lr
-            if self.opt is None and self.opt_func: self.opt = self.opt_func(self.model.parameters(), lr)
+            self.lr = lr or self.lr
+            self.opt_func = opt_func or self.opt_func
+            self.loss_func = loss_func or self.loss_func
             self._fit(train, valid)
         finally:
             for cb in cbs: self.cbs.remove(cb)
@@ -355,8 +359,25 @@ class Learner():
         print('Model Architecture:')
         print(self.model)
 
+    def save_checkpoint(self, path):
+        torch.save({'model':self.model.to('cpu').state_dict(), 'opt':self.opt.state_dict()}, path)
+        self.model.to(def_device)
+
+    def load_checkpoint(self, path):
+        checkpoint = torch.load(path)
+        self.model.load_state_dict(checkpoint['model'])
+        self.model.to(def_device)
+        self.opt = self.opt_func(self.model.parameters(), self.lr)
+        self.opt.load_state_dict(checkpoint['opt'])
+        
+        # Move optimizer state to the same device as model parameters
+        # for state in self.opt.state.values():
+        #     for k, v in state.items():
+        #         if isinstance(v, torch.Tensor):
+        #             state[k] = v.to(def_device)
+
     def __getattr__(self, name):
-        if name in ('predict','get_loss','backward','step','zero_grad'): return partial(self.callback, name)
+        if name in ('predict','get_loss','backward','step','zero_grad','optimizer_init'): return partial(self.callback, name)
         raise AttributeError(name)
 
     def callback(self, method_nm): run_cbs(self.cbs, method_nm, self)
@@ -394,11 +415,10 @@ class EvaluateLearner(TrainLearner):
     def simple_evaluate(self, ds, eval_func=None):
         self.model.train(False)
         if eval_func is None: eval_func = self.loss_func
-        device = next(self.model.parameters()).device
-        to_device(ds, device=device)
+        self.model.to(def_device)
         with torch.no_grad():
-            y_pred = self.model(ds.x)
-            return eval_func(y_pred, ds.y)
+            y_pred = self.model(to_device(ds.x))
+            return eval_func(y_pred, to_device(ds.y))
         
     def predict(self): 
         self.preds = self.model(self.batch[0]) 
@@ -546,7 +566,7 @@ def lr_find(self:Learner, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
 
 class BaseSchedCB(Callback):
     def __init__(self, sched): self.sched = sched
-    def before_fit(self, learn): self.schedo = self.sched(learn.opt)
+    def after_optimizer_init(self, learn): self.schedo = self.sched(learn.opt)
     def _step(self, learn):
         if learn.training: self.schedo.step()
 
